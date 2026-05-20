@@ -1,0 +1,29 @@
+[project]
+name = "adodas-irt"
+version = "0.1.0"
+description = "AdoDAS 2026 ACM MM Grand Challenge: IRT-joint hybrid stack"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26,<2.0",
+    "pandas>=2.2",
+    "pyarrow>=16.0",
+    "scikit-learn>=1.5",
+    "scipy>=1.11",
+    "torch>=2.2",
+    "lightgbm>=4.3",
+    "xgboost>=2.0",
+    "tqdm>=4.66",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+catboost = ["catboost>=1.2"]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["adodas*"]
+exclude = ["tests*", "output*", "scripts*"]

@@ -1,0 +1,39 @@
+# Feature engineering knobs. Read by scripts/01_build_features.py.
+
+# PCA reduction applied to high-dimensional SSL pooled features.
+# audio_ssl: chinese-hubert-large × 5 stats = 5120 raw dims per session
+# video_ssl: dinov2-large × 5 stats = 5120 raw dims per session
+pca:
+  audio_ssl_dims: 96      # per session
+  video_ssl_dims: 96      # per session
+  fit_on: train_plus_val  # PCA always fit on labeled data only, never test
+  random_state: 42
+  whiten: false
+
+# Session-difference features. B03 (sad) − B02 (happy) is the canonical
+# emotional contrast feature. Keep raw + diff, not diff alone.
+session_diffs:
+  enable: true
+  pairs:
+    - [B03, B02]   # sad − happy
+    - [B03, A01]   # sad − reading baseline
+    - [B02, A01]   # happy − reading baseline
+  open_ended_mean: true   # add mean(B01, B02, B03) as one block
+
+# View definitions: each view is a concatenated subset of pooled blocks.
+# The hybrid stack trains tree experts × view × model_family to diversify.
+views:
+  fused: all
+  audio_only: [mel_mfcc, vad, egemaps, ssl_embed]
+  video_only:
+    - headpose_geom
+    - face_behavior
+    - qc_stats
+    - vad_agg
+    - body_pose
+    - global_motion
+    - vision_ssl_embed
+
+# Optional feature selection per view (rejects all-NaN / zero-variance cols).
+drop_zero_variance: true
+drop_high_na: 0.5         # drop a column if > 50% rows are NaN before imputation

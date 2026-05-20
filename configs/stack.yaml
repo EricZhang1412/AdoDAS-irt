@@ -1,0 +1,36 @@
+# Meta-blend + post-processing. Read by scripts/06_meta_blend.py and
+# scripts/07_refit_all_and_predict.py.
+
+# Which OOF sources to combine. trees and irt must exist. seq is optional.
+sources: [trees, irt]
+
+# Meta-learner.
+a2_meta:
+  type: nnls               # nnls | ridge | mean
+  sum_to_one: true         # constrain non-neg weights to a simplex
+  ridge_alpha: 0.5         # used when type == ridge
+  log_oof_logits: true     # blend in CORAL z-logit space, not class indices
+
+a1_meta:
+  type: multi_ridge        # multi_ridge (D/A/S shared) | nnls
+  ridge_alpha: 0.5
+  share_coupling: true     # cross-target ridge weights
+
+# A2 per-item ordinal threshold optimization on meta OOF continuous score.
+# Continuous score: weighted CORAL expectation E[y] in [0,3].
+a2_thresholds:
+  method: golden_section   # nelder_mead | golden_section
+  init: [0.5, 1.5, 2.5]
+  bounds_pad: 0.4          # allow t_k ± 0.4 search range around init
+  enforce_monotone: true
+
+# A1 calibration: choose exactly ONE (double-calibration is unstable).
+a1_calibration:
+  method: logit_shift      # isotonic | logit_shift
+  isotonic_clip: [0.01, 0.99]
+
+# Refit-all-labeled (stage10 mode).
+refit:
+  enable: true
+  combine_splits: [train, val]
+  random_state: 42

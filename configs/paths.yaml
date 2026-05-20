@@ -1,0 +1,33 @@
+# Path configuration. Override on the remote server.
+
+feature_root: /data/maluzhang-folder/datasets/AdoDAS_Challenge/features
+manifest_dir: /data/maluzhang-folder/datasets/AdoDAS_Challenge/manifests
+output_dir: ./output
+
+# Manifest CSV names (relative to manifest_dir).
+manifest_train: train.csv
+manifest_val: val.csv
+manifest_test: test.csv
+
+# Subject-disjoint 5-fold definitions are written to manifest_dir/cv{N}/.
+n_folds: 5
+fold_seed: 42
+
+# Modality SSL model tags (must match the directory layout under feature_root).
+audio_ssl_model_tag: chinese-hubert-large
+video_ssl_model_tag: dinov2-large
+
+# Pooled features supported by the loader. Sequence features need separate
+# handling (see data/sequence_io.py); pooled-only is the hybrid-stack default.
+audio_features: [mel_mfcc, vad, egemaps, ssl_embed]
+video_features:
+  - headpose_geom
+  - face_behavior
+  - qc_stats
+  - vad_agg
+  - body_pose
+  - global_motion
+  - vision_ssl_embed
+
+# Sessions; order is fixed.
+sessions: [A01, B01, B02, B03]

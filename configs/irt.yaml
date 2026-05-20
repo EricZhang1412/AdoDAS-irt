@@ -1,0 +1,49 @@
+# IRT joint head hyperparams. Read by scripts/04_train_irt_oof.py.
+
+# Encoder.
+d_hidden: 256
+encoder_layers: 2
+encoder_dropout: 0.3
+feature_noise_std: 0.02
+
+# Latent severity dimension. 3 = D/A/S; bifactor (4) adds a general-distress
+# axis as ablation. Stick to 3 by default.
+d_theta: 3
+bifactor: false
+
+# Use which view as input. "fused" is the canonical choice.
+view: fused
+
+# Loss weights.
+lambda_a1: 1.0
+lambda_consist: 0.3
+lambda_qwk: 0.2
+lambda_anchor: 1.0
+consistency_temperature: 1.0
+label_smoothing: 0.05
+
+# Anchor items per subscale (0-indexed in d01..d21). Sign of a_j is forced
+# positive to break θ sign-flip indeterminacy across folds. Defaults pick
+# items that DASS-21 traditionally loads cleanly on each subscale.
+anchor_items:
+  D: 2   # d03 — "I felt I had nothing to look forward to" → depression
+  A: 1   # d02 — "I was aware of dryness in my mouth" → anxiety
+  S: 0   # d01 — "I found it hard to wind down" → stress
+
+# Training schedule.
+epochs: 80
+batch_size: 32
+lr: 0.001
+weight_decay: 0.01
+warmup_epochs: 3
+patience: 12
+grad_clip: 1.0
+amp: false
+seed: 42
+
+# Per-fold seed offset so each fold gets a slightly different init.
+fold_seed_offset: 1000
+
+# TTA: number of Gaussian noise replicas at inference (averaged).
+tta_replicas: 8
+tta_noise_std: 0.01

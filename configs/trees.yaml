@@ -1,0 +1,90 @@
+# Tree-expert hyperparams. Read by scripts/03_train_trees_oof.py.
+
+# Which model families participate. Each (family × view) becomes one OOF column.
+families: [lightgbm, xgboost, hgbt, extratrees]
+
+views: [fused, audio_only, video_only]
+
+# A2 trains 21 regressors per (family, view) on continuous targets in [0,3].
+# A1 trains 3 binary classifiers per (family, view).
+# All use the same 5 folds.
+
+lightgbm:
+  regressor:
+    n_estimators: 600
+    learning_rate: 0.03
+    num_leaves: 31
+    min_child_samples: 10
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 5
+    reg_alpha: 0.1
+    reg_lambda: 0.1
+    random_state: 42
+    verbose: -1
+  classifier:
+    n_estimators: 600
+    learning_rate: 0.03
+    num_leaves: 31
+    min_child_samples: 10
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 5
+    reg_alpha: 0.1
+    reg_lambda: 0.1
+    is_unbalance: true
+    random_state: 42
+    verbose: -1
+
+xgboost:
+  regressor:
+    n_estimators: 600
+    learning_rate: 0.03
+    max_depth: 6
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 0.5
+    random_state: 42
+    n_jobs: 4
+    tree_method: hist
+  classifier:
+    n_estimators: 600
+    learning_rate: 0.03
+    max_depth: 6
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 0.5
+    random_state: 42
+    n_jobs: 4
+    tree_method: hist
+
+hgbt:
+  regressor:
+    max_iter: 400
+    learning_rate: 0.04
+    max_depth: 6
+    l2_regularization: 1.0
+    random_state: 42
+  classifier:
+    max_iter: 400
+    learning_rate: 0.04
+    max_depth: 6
+    l2_regularization: 1.0
+    random_state: 42
+
+extratrees:
+  regressor:
+    n_estimators: 400
+    max_features: 0.5
+    min_samples_leaf: 3
+    n_jobs: -1
+    random_state: 42
+  classifier:
+    n_estimators: 400
+    max_features: 0.5
+    min_samples_leaf: 3
+    n_jobs: -1
+    random_state: 42
+    class_weight: balanced

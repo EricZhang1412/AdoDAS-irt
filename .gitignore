@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Generated outputs — never commit experimental artifacts
+output/
+runs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# OOF caches / parquet feature tables
+*.parquet
+*.npz
+*.npy
+!tests/**/*.npy
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Submission artifacts (not source code)
+submission/
+submissions/
