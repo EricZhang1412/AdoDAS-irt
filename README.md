@@ -18,36 +18,81 @@ adodas/
 ├── models/       # tree_experts, irt_joint, irt_trainer, heads
 ├── stack/        # meta_blend, thresholds, calibration
 ├── submit/       # build_submission, refit_all_labeled
-└── utils/        # metrics, seed, io
+└── utils/        # metrics, seed, io, dass21
 
 configs/          # paths/features/trees/irt/stack yaml
 scripts/          # 01-07 流水线 + 99_smoke_test
+tests/            # unit tests
+run.sh            # 统一入口脚本
 ```
 
-## 快速开始
+## 安装(推荐 uv)
 
-1. 改 `configs/paths.yaml` 指向远端服务器上的 `feature_root` 和 `manifest_dir`。
-2. 安装依赖:`pip install -e .`(或 `uv pip install -e .`)。
-3. 顺序执行:
+[uv](https://github.com/astral-sh/uv) 是 Rust 写的 Python 包管理器,比 pip 快 10-100×。
 
 ```bash
-python scripts/01_build_features.py --config configs/paths.yaml
-python scripts/02_make_folds.py     --config configs/paths.yaml --n-folds 5
-python scripts/03_train_trees_oof.py --config configs/trees.yaml
-python scripts/04_train_irt_oof.py  --config configs/irt.yaml
-python scripts/06_meta_blend.py     --config configs/stack.yaml
-python scripts/07_refit_all_and_predict.py --config configs/stack.yaml
+# 一次性安装 uv(macOS / Linux)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 在项目目录里创建 .venv 并安装依赖(读 pyproject.toml)
+./run.sh setup
+# 等价于:
+#   uv venv
+#   uv pip install -e ".[dev]"
 ```
 
-4. 提交 CSV 在 `output/submission/` 下。
+`run.sh` 会自动检测 `.venv/bin/python`,所以**不需要手动 `source .venv/bin/activate`**,直接 `./run.sh <command>` 就行。
 
-## 端到端 smoke 测试
+也可以走传统 pip 路线:
 
 ```bash
-python scripts/99_smoke_test.py --n-subjects 10
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
-5 分钟内跑完整个 pipeline(dummy 数据)。
+## 使用
+
+所有命令统一通过 `run.sh` 调用:
+
+```bash
+./run.sh setup        # 安装依赖(uv)
+./run.sh smoke        # 端到端 smoke test(合成数据,5 分钟)
+./run.sh test         # pytest 单元测试
+
+# 流水线(每一步独立运行)
+./run.sh features     # 01_build_features.py
+./run.sh folds        # 02_make_folds.py
+./run.sh trees        # 03_train_trees_oof.py
+./run.sh irt          # 04_train_irt_oof.py
+./run.sh meta         # 06_meta_blend.py
+./run.sh refit        # 07_refit_all_and_predict.py
+
+# 或者一把梭
+./run.sh pipeline     # 顺序跑 features → folds → trees → irt → meta → refit
+```
+
+### 配置覆盖
+
+`run.sh` 通过环境变量读 5 个 yaml 配置,可以覆盖:
+
+```bash
+PATHS_CFG=configs/paths_server.yaml ./run.sh pipeline
+IRT_CFG=configs/irt_bifactor.yaml ./run.sh irt
+```
+
+也可以直接给底层脚本透传参数:
+
+```bash
+./run.sh trees --families lightgbm --views fused      # 只跑 lightgbm × fused
+./run.sh smoke --n-subjects 20 --d-feat 64
+```
+
+### 在远端服务器上跑
+
+1. clone 仓库 + `./run.sh setup`
+2. 改 `configs/paths.yaml` 指向服务器上的 `feature_root` 和 `manifest_dir`
+3. `./run.sh pipeline`
+4. 提交 CSV 在 `output/submission/` 下
 
 ## 提交格式
 
@@ -59,4 +104,4 @@ python scripts/99_smoke_test.py --n-subjects 10
 
 - MTCN/Cross-modal attention/AuxFiLM(被替换对象)
 - TabPFN / AutoGluon(留作 ablation)
-- 序列分支默认关(stretch goal)
+- 序列分支默认关(stretch goal,见 `scripts/05_train_seq_oof.py` 注释)
