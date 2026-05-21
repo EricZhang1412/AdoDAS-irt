@@ -43,10 +43,16 @@ def refit_trees(
     a2_list: list[np.ndarray] = []
     a1_list: list[np.ndarray] = []
     names: list[str] = []
+    import time
     for family in families:
         params = family_params[family]
         for view_name, X_tr in views.items():
             X_te = X_test_views[view_name]
+            log.info(
+                f"refit START: {family} × {view_name}  "
+                f"X_tr={X_tr.shape} X_te={X_te.shape} (24 models: 21 A2 + 3 A1)"
+            )
+            t0 = time.time()
             a2_pred, a1_pred = refit_and_predict(
                 family, X_tr, y_a2, y_a1, X_te,
                 params["regressor"], params["classifier"],
@@ -54,7 +60,7 @@ def refit_trees(
             a2_list.append(a2_pred)
             a1_list.append(a1_pred)
             names.append(f"{family}__{view_name}")
-            log.info(f"refit done: {family} × {view_name}")
+            log.info(f"refit done : {family} × {view_name}  ({time.time() - t0:.1f}s)")
     a2 = np.stack(a2_list, axis=-1).astype(np.float32)
     a1 = np.stack(a1_list, axis=-1).astype(np.float32)
     return RefitPrediction(a2, a1, names)

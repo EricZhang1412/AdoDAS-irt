@@ -232,23 +232,29 @@ def refit_and_predict(
     X_test: pd.DataFrame,
     reg_params: dict[str, Any],
     cls_params: dict[str, Any],
+    log_every: int = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Fit one regressor per A2 item and one classifier per A1 target on the
     full labeled pool, then predict on X_test. Used by stage-10-style refit."""
+    import time
     pre = make_preprocessor(family)
-    pre.fit(X_train_all.to_numpy(np.float32))
-    Xtr_np = pre.transform(X_train_all.to_numpy(np.float32))
+    Xtr_full = X_train_all.to_numpy(np.float32)
+    pre.fit(Xtr_full)
+    Xtr_np = pre.transform(Xtr_full)
     Xte_np = pre.transform(X_test.to_numpy(np.float32))
 
     a2_pred = np.full((len(X_test), 21), np.nan, dtype=np.float32)
+    t0 = time.time()
     for j in range(21):
         y = y_a2[:, j]
         mask = np.isfinite(y) & (y >= 0)
         if mask.sum() < 10:
             continue
         reg = make_regressor(family, reg_params)
-        reg.fit(pre.transform(X_train_all.to_numpy(np.float32)[mask]), y[mask])
+        reg.fit(pre.transform(Xtr_full[mask]), y[mask])
         a2_pred[:, j] = np.clip(reg.predict(Xte_np), 0.0, 3.0)
+        if log_every > 0 and ((j + 1) % log_every == 0 or j == 20):
+            log.info(f"  A2 progress: {j + 1}/21 items  elapsed={time.time() - t0:.1f}s")
 
     a1_pred = np.full((len(X_test), 3), np.nan, dtype=np.float32)
     for t in range(3):
@@ -257,7 +263,8 @@ def refit_and_predict(
         if mask.sum() < 10:
             continue
         cls = make_classifier(family, cls_params)
-        cls.fit(pre.transform(X_train_all.to_numpy(np.float32)[mask]), y[mask].astype(int))
+        cls.fit(pre.transform(Xtr_full[mask]), y[mask].astype(int))
         a1_pred[:, t] = _classifier_proba(cls, Xte_np)
+    log.info(f"  A1 progress: 3/3 targets done  total={time.time() - t0:.1f}s")
 
     return a2_pred, a1_pred
