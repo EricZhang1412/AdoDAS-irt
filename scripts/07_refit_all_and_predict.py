@@ -89,7 +89,18 @@ def main() -> None:
 
         test_path = feature_dir / f"{view}_test.parquet"
         if not test_path.exists():
-            raise FileNotFoundError(f"missing {test_path}; rerun 01_build_features.py with the test split")
+            log.error(
+                f"missing {test_path}\n"
+                f"  Stage 01 did not produce the test split. Two common causes:\n"
+                f"   (a) the test manifest ({paths.get('manifest_test', 'test.csv')}) "
+                f"wasn't present under {paths['manifest_dir']} when you ran stage 01\n"
+                f"   (b) test feature files under {paths['feature_root']}/test/ "
+                f"weren't on disk yet (organizer hadn't released them)\n"
+                f"  Fix: ensure both are present, then run:\n"
+                f"      ./run.sh features --splits test\n"
+                f"  (the saved PCA blocks from the labeled run will be reused — no refit)"
+            )
+            sys.exit(2)
         df_test = pd.read_parquet(test_path)
         views_test[view] = df_test.reset_index(drop=True)
 

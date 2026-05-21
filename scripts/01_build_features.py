@@ -102,26 +102,36 @@ def main() -> None:
         raw_tables[split] = raw_tables[split][head + rest]
         raw_tables[split].to_parquet(output_dir / f"{split}_raw.parquet", index=False)
 
-    # Fit PCA on (train + val) labeled rows only.
+    # PCA: either fit fresh on (train + val), or load a previously-saved fit
+    # (so we can rebuild only the test split after the labeled run is done).
     labeled_splits = [s for s in ("train", "val") if s in raw_tables]
+    pca_path = output_dir / "pca_blocks.pkl"
     if not labeled_splits:
-        log.error("no labeled splits available; cannot fit PCA")
-        sys.exit(1)
-
-    df_labeled = pd.concat([raw_tables[s] for s in labeled_splits], axis=0, ignore_index=True)
-    log.info(f"PCA fit pool rows={len(df_labeled)}")
-    pca_cfg = feats.get("pca", {})
-    pca_blocks = fit_ssl_pca(
-        df_labeled,
-        n_components_audio=int(pca_cfg.get("audio_ssl_dims", 96)),
-        n_components_video=int(pca_cfg.get("video_ssl_dims", 96)),
-        random_state=int(pca_cfg.get("random_state", 42)),
-        whiten=bool(pca_cfg.get("whiten", False)),
-    )
-    with open(output_dir / "pca_blocks.pkl", "wb") as f:
-        pickle.dump(pca_blocks, f)
-    save_json(block_summary(pca_blocks), output_dir / "pca_summary.json")
-    log.info(f"PCA blocks fitted: {len(pca_blocks)}")
+        if not pca_path.exists():
+            log.error(
+                "no labeled splits available AND no saved pca_blocks.pkl — "
+                "first run features on train+val (default --splits), then "
+                "rerun for test alone"
+            )
+            sys.exit(1)
+        with open(pca_path, "rb") as f:
+            pca_blocks = pickle.load(f)
+        log.info(f"loaded {len(pca_blocks)} saved PCA blocks from {pca_path}")
+    else:
+        df_labeled = pd.concat([raw_tables[s] for s in labeled_splits], axis=0, ignore_index=True)
+        log.info(f"PCA fit pool rows={len(df_labeled)}")
+        pca_cfg = feats.get("pca", {})
+        pca_blocks = fit_ssl_pca(
+            df_labeled,
+            n_components_audio=int(pca_cfg.get("audio_ssl_dims", 96)),
+            n_components_video=int(pca_cfg.get("video_ssl_dims", 96)),
+            random_state=int(pca_cfg.get("random_state", 42)),
+            whiten=bool(pca_cfg.get("whiten", False)),
+        )
+        with open(pca_path, "wb") as f:
+            pickle.dump(pca_blocks, f)
+        save_json(block_summary(pca_blocks), output_dir / "pca_summary.json")
+        log.info(f"PCA blocks fitted: {len(pca_blocks)}")
 
     # Transform every split with the same PCA + add session diffs.
     diff_cfg = feats.get("session_diffs", {})
@@ -144,16 +154,20 @@ def main() -> None:
             view_df.to_parquet(out, index=False)
             log.info(f"split={split} view={view_name} → {out.name}  shape={view_df.shape}")
 
-    # Build subject-level labels (train ∪ val).
-    label_frames: list[pd.DataFrame] = []
-    for split in labeled_splits:
-        manifest_path = manifest_dir / paths.get(f"manifest_{split}", f"{split}.csv")
-        if manifest_path.exists():
-            mani = load_manifest(manifest_path)
-            label_frames.append(subject_labels(mani))
-    labels = pd.concat(label_frames, axis=0, ignore_index=True).drop_duplicates(subset=ID_COLS)
-    labels.to_parquet(output_dir / "labels.parquet", index=False)
-    log.info(f"subject_labels → {output_dir / 'labels.parquet'}  shape={labels.shape}")
+    # Build subject-level labels (train ∪ val). Skipped on a test-only rerun
+    # since labels.parquet would already exist from the earlier labeled run.
+    if labeled_splits:
+        label_frames: list[pd.DataFrame] = []
+        for split in labeled_splits:
+            manifest_path = manifest_dir / paths.get(f"manifest_{split}", f"{split}.csv")
+            if manifest_path.exists():
+                mani = load_manifest(manifest_path)
+                label_frames.append(subject_labels(mani))
+        labels = pd.concat(label_frames, axis=0, ignore_index=True).drop_duplicates(subset=ID_COLS)
+        labels.to_parquet(output_dir / "labels.parquet", index=False)
+        log.info(f"subject_labels → {output_dir / 'labels.parquet'}  shape={labels.shape}")
+    else:
+        log.info("test-only rerun: keeping existing labels.parquet untouched")
 
     save_yaml({"splits": list(raw_tables.keys()), "views": list(views_cfg.keys())}, output_dir / "manifest.yaml")
     log.info("01_build_features done")
