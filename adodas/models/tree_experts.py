@@ -11,18 +11,31 @@ plus lightgbm and xgboost.
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor, HistGradientBoostingClassifier, HistGradientBoostingRegressor
+from sklearn.exceptions import DataConversionWarning
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from ..utils.dass21 import A1_COLS, ITEM_COLS
 from .heads import sigmoid as _sigmoid
+
+# Silence the "X does not have valid feature names" UserWarning that LightGBM /
+# sklearn emits when a model fitted on a DataFrame predicts on a numpy array.
+# We deliberately use numpy at predict time (column order is aligned upstream
+# by 01_build_features.py), so the warning is noise, not signal.
+warnings.filterwarnings(
+    "ignore",
+    message=".*X does not have valid feature names.*",
+    category=UserWarning,
+)
+warnings.filterwarnings("ignore", category=DataConversionWarning)
 
 log = logging.getLogger(__name__)
 
