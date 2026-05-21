@@ -150,6 +150,14 @@ def main() -> None:
                 audio_features=paths["audio_features"],
                 video_features=paths["video_features"],
             )
+            # If the labeled run already wrote {view}_train.parquet, align this
+            # split's columns to that schema. Without this, test-only rebuilds
+            # can introduce/lose session-diff columns (depending on which
+            # sessions exist), and stage 07's tree refit would error on shape.
+            train_view_path = output_dir / f"{view_name}_train.parquet"
+            if split != "train" and train_view_path.exists():
+                ref_cols = list(pd.read_parquet(train_view_path).columns)
+                view_df = view_df.reindex(columns=ref_cols)
             out = output_dir / f"{view_name}_{split}.parquet"
             view_df.to_parquet(out, index=False)
             log.info(f"split={split} view={view_name} → {out.name}  shape={view_df.shape}")
