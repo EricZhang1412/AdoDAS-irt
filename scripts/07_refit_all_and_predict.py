@@ -39,6 +39,8 @@ def main() -> None:
     p.add_argument("--irt-config", default="configs/irt.yaml")
     p.add_argument("--stack-config", default="configs/stack.yaml")
     p.add_argument("--irt-runs", type=int, default=3)
+    p.add_argument("--force-refit", action="store_true",
+                   help="ignore refit_tree_preds.npz / refit_irt_preds.npz and rerun the refit")
     args = p.parse_args()
 
     paths = load_yaml(args.paths_config)
@@ -108,16 +110,30 @@ def main() -> None:
     for view in views:
         views_test[view] = views_test[view].drop(columns=[c for c in ID_COLS if c in views_test[view].columns]).fillna(0.0)
 
-    # Refit tree experts on full labeled pool.
-    tree_pred = refit_trees(
-        families=trees_cfg["families"],
-        views=views_train,
-        X_test_views=views_test,
-        y_a2=y_a2,
-        y_a1=y_a1,
-        family_params=trees_cfg,
-    )
-    log.info(f"tree refit a2={tree_pred.a2.shape}, a1={tree_pred.a1.shape}")
+    # Refit tree experts on full labeled pool. Checkpoint after — refit is the
+    # expensive step (hours), and a downstream OSError (e.g. disk-full when
+    # writing the CSV) would otherwise discard all of it.
+    tree_ckpt = meta_dir / "refit_tree_preds.npz"
+    if tree_ckpt.exists() and not getattr(args, "force_refit", False):
+        log.info(f"resume: loading tree refit predictions from {tree_ckpt}")
+        npz = np.load(tree_ckpt, allow_pickle=True)
+        from adodas.submit.refit_all_labeled import RefitPrediction
+        tree_pred = RefitPrediction(npz["a2"], npz["a1"], list(npz["names"]))
+    else:
+        tree_pred = refit_trees(
+            families=trees_cfg["families"],
+            views=views_train,
+            X_test_views=views_test,
+            y_a2=y_a2,
+            y_a1=y_a1,
+            family_params=trees_cfg,
+        )
+        np.savez(
+            tree_ckpt,
+            a2=tree_pred.a2, a1=tree_pred.a1,
+            names=np.array(tree_pred.source_names),
+        )
+        log.info(f"tree refit a2={tree_pred.a2.shape}, a1={tree_pred.a1.shape} → checkpoint {tree_ckpt}")
 
     # Refit IRT on the fused view (matches OOF setup).
     fused_X_train = views_train["fused"].to_numpy(np.float32)
@@ -153,8 +169,20 @@ def main() -> None:
         tta_replicas=int(irt_cfg.get("tta_replicas", 8)),
         tta_noise_std=float(irt_cfg.get("tta_noise_std", 0.01)),
     )
-    irt_pred = refit_irt(fused_X_train, y_a2, y_a1, fused_X_test, model_cfg, train_cfg, n_runs=int(args.irt_runs))
-    log.info(f"irt refit a2={irt_pred.a2.shape}, a1={irt_pred.a1.shape}")
+    irt_ckpt = meta_dir / "refit_irt_preds.npz"
+    if irt_ckpt.exists() and not getattr(args, "force_refit", False):
+        log.info(f"resume: loading IRT refit predictions from {irt_ckpt}")
+        npz = np.load(irt_ckpt, allow_pickle=True)
+        from adodas.submit.refit_all_labeled import RefitPrediction
+        irt_pred = RefitPrediction(npz["a2"], npz["a1"], list(npz["names"]))
+    else:
+        irt_pred = refit_irt(fused_X_train, y_a2, y_a1, fused_X_test, model_cfg, train_cfg, n_runs=int(args.irt_runs))
+        np.savez(
+            irt_ckpt,
+            a2=irt_pred.a2, a1=irt_pred.a1,
+            names=np.array(irt_pred.source_names),
+        )
+        log.info(f"irt refit a2={irt_pred.a2.shape}, a1={irt_pred.a1.shape} → checkpoint {irt_ckpt}")
 
     # Combine test predictions in the same source order as 06_meta_blend.py used.
     sources = stack_cfg.get("sources", ["trees", "irt"])
@@ -182,10 +210,35 @@ def main() -> None:
     else:
         a1_test_cal = apply_logit_shift(a1_test_prob, cal_result)
 
-    a1_path = write_a1_submission(test_ids, a1_test_cal, output_dir)
-    a2_path = write_a2_submission(test_ids, a2_test_int, output_dir)
-    log.info(f"A1 submission → {a1_path}")
-    log.info(f"A2 submission → {a2_path}")
+    # Defensive: dump the final arrays as npz to meta/ before the CSV write,
+    # so a disk-full or permissions error on submission/ still leaves us with
+    # something to recover from (rerun stage 07; checkpoints + this npz let
+    # the post-processing replay in seconds).
+    try:
+        np.savez(
+            meta_dir / "test_final_preds.npz",
+            a1_cal=a1_test_cal,
+            a2_int=a2_test_int,
+            test_ids=test_ids.to_numpy(),
+        )
+    except OSError as exc:
+        log.warning(f"could not dump test_final_preds.npz: {exc}")
+
+    try:
+        a1_path = write_a1_submission(test_ids, a1_test_cal, output_dir)
+        a2_path = write_a2_submission(test_ids, a2_test_int, output_dir)
+        log.info(f"A1 submission → {a1_path}")
+        log.info(f"A2 submission → {a2_path}")
+    except OSError as exc:
+        log.error(
+            f"failed to write submission CSV: {exc}\n"
+            f"  predictions ARE saved at {meta_dir / 'test_final_preds.npz'}.\n"
+            f"  Free up disk space then write CSV manually, e.g.:\n"
+            f"    python -c \"import numpy as np, pandas as pd; "
+            f"d = np.load('{meta_dir / 'test_final_preds.npz'}', allow_pickle=True); "
+            f"... (or rerun this stage with checkpoints loaded)\""
+        )
+        sys.exit(3)
 
 
 if __name__ == "__main__":
