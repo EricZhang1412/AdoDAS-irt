@@ -108,7 +108,13 @@ def main() -> None:
     )
 
     seed_offset = int(irt_cfg.get("fold_seed_offset", 1000))
-    valid = np.isfinite(y_a2).all(axis=1) & np.isfinite(y_a1).all(axis=1) & (y_a2 >= 0).all(axis=1) & (y_a1 >= 0).all(axis=1)
+    # Relaxed mask: any-valid-item suffices. Per-position label masking inside
+    # adodas.models.irt_joint handles individual NaN/-1 cells in the loss.
+    # The strict ALL-valid mask used to drop most subjects on real data.
+    any_a2 = (np.isfinite(y_a2) & (y_a2 >= 0)).any(axis=1)
+    any_a1 = (np.isfinite(y_a1) & (y_a1 >= 0)).any(axis=1)
+    valid = any_a2 & any_a1
+    log.info(f"IRT OOF mask: {int(valid.sum())} / {len(valid)} subjects kept (any-valid)")
 
     for fold in range(n_folds):
         train_cfg.seed = train_cfg.seed + seed_offset * 0 + fold * 7919

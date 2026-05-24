@@ -86,7 +86,18 @@ def refit_irt(
         run_cfg = TrainConfig(**{**train_cfg.__dict__, "seed": train_cfg.seed + run})
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        mask = np.isfinite(y_a2).all(axis=1) & np.isfinite(y_a1).all(axis=1) & (y_a2 >= 0).all(axis=1) & (y_a1 >= 0).all(axis=1)
+        # Relaxed mask: keep a subject as long as it has at least one valid A2
+        # item AND at least one valid A1 target. Per-position NaN masking inside
+        # the loss (irt_joint.coral_bce / a1_bce) handles individual missing
+        # cells. The old strict ALL-valid mask was wiping out 90%+ of subjects.
+        any_a2 = (np.isfinite(y_a2) & (y_a2 >= 0)).any(axis=1)
+        any_a1 = (np.isfinite(y_a1) & (y_a1 >= 0)).any(axis=1)
+        mask = any_a2 & any_a1
+        if run == 0:
+            log.info(
+                f"IRT mask: {int(mask.sum())} / {len(mask)} subjects survive "
+                f"(any-valid-item, was previously all-valid)"
+            )
         X = X_train_all[mask]
         ya2 = y_a2[mask]
         ya1 = y_a1[mask]

@@ -76,9 +76,17 @@ def train_one_fold(
     train_loader = _make_loader(X_tr, y_a2_tr, y_a1_tr, train_cfg.batch_size, shuffle=True)
     val_loader = _make_loader(X_va, y_a2_va, y_a1_va, train_cfg.batch_size * 4, shuffle=False)
 
+    # Early-stop on val_loss (more stable than val_qwk on tiny val splits where
+    # random init can lock in a noisy "best" at epoch 0). Track val_qwk for the
+    # log; checkpoint when EITHER val_loss improves OR val_qwk improves beyond
+    # a healthy margin (so we still capture the model that's actually best at
+    # the metric we care about).
+    best_val_loss = math.inf
     best_val_qwk = -math.inf
     best_state: dict | None = None
     patience_left = train_cfg.patience
+    # Don't trust epoch-0 metrics — warmup means real gradients haven't kicked in.
+    grace_epochs = max(train_cfg.warmup_epochs, 3)
 
     for epoch in range(train_cfg.epochs):
         lr_scale = _cosine_with_warmup(epoch, train_cfg.epochs, train_cfg.warmup_epochs)
@@ -97,18 +105,22 @@ def train_one_fold(
             nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
             opt.step()
 
-        # Eval
-        val_qwk, val_f1, _ = _evaluate(model, val_loader, device)
-        improved = val_qwk > best_val_qwk + 1e-5
-        if improved:
-            best_val_qwk = val_qwk
+        # Eval (with val_loss for early-stop stability).
+        val_qwk, val_f1, val_loss = _evaluate(model, val_loader, device, model_cfg, return_loss=True)
+        loss_improved = val_loss < best_val_loss - 1e-4
+        qwk_improved = val_qwk > best_val_qwk + 5e-3
+        improved = (epoch >= grace_epochs) and (loss_improved or qwk_improved)
+        if improved or best_state is None:
+            best_val_loss = min(best_val_loss, val_loss)
+            best_val_qwk = max(best_val_qwk, val_qwk)
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             patience_left = train_cfg.patience
-        else:
+        elif epoch >= grace_epochs:
             patience_left -= 1
         log.info(
-            f"epoch {epoch:03d} lr={train_cfg.lr * lr_scale:.5f} val_qwk={val_qwk:.4f} val_f1={val_f1:.4f} "
-            f"best_qwk={best_val_qwk:.4f} patience_left={patience_left}"
+            f"epoch {epoch:03d} lr={train_cfg.lr * lr_scale:.5f} val_loss={val_loss:.4f} "
+            f"val_qwk={val_qwk:.4f} val_f1={val_f1:.4f} best_loss={best_val_loss:.4f} "
+            f"best_qwk={best_val_qwk:.4f} patience={patience_left}"
         )
         if patience_left <= 0:
             break
@@ -120,15 +132,36 @@ def train_one_fold(
     return model, val_preds
 
 
-def _evaluate(model: IRTJointModel, loader: DataLoader, device: torch.device) -> tuple[float, float, dict[str, np.ndarray]]:
+def _evaluate(
+    model: IRTJointModel,
+    loader: DataLoader,
+    device: torch.device,
+    model_cfg=None,
+    return_loss: bool = False,
+):
+    """Evaluate val metrics. Returns (qwk, f1, val_loss_or_preds_dict).
+
+    Per-item QWK now masks NaN/-1 labels per position (matches training loss),
+    so subjects with partial labels still contribute on items they answered.
+    """
+    from .irt_joint import total_loss as _total_loss  # local to avoid cycle
     model.eval()
     all_z: list[np.ndarray] = []
     all_a1: list[np.ndarray] = []
     all_y2: list[np.ndarray] = []
     all_y1: list[np.ndarray] = []
+    loss_sum = 0.0
+    n_batches = 0
     with torch.no_grad():
         for xb, y2b, y1b in loader:
-            out = model(xb.to(device))
+            xb = xb.to(device)
+            y2_dev = y2b.to(device)
+            y1_dev = y1b.to(device)
+            out = model(xb)
+            if model_cfg is not None:
+                loss, _ = _total_loss(out, y2_dev, y1_dev, model.discrim(), model_cfg)
+                loss_sum += float(loss.item())
+                n_batches += 1
             all_z.append(out["z"].cpu().numpy())
             all_a1.append(torch.sigmoid(out["a1_logits"]).cpu().numpy())
             all_y2.append(y2b.numpy())
@@ -139,12 +172,43 @@ def _evaluate(model: IRTJointModel, loader: DataLoader, device: torch.device) ->
     y_a1 = np.concatenate(all_y1, axis=0)
 
     preds_int = argmax_from_cumlogits(z)
-    valid_a2 = np.isfinite(y_a2).all(axis=1) & (y_a2 >= 0).all(axis=1)
-    valid_a1 = np.isfinite(y_a1).all(axis=1) & (y_a1 >= 0).all(axis=1)
-    qwk = mean_qwk(preds_int[valid_a2], y_a2[valid_a2].astype(int)) if valid_a2.any() else 0.0
-    f1 = binary_f1(p_a1[valid_a1], y_a1[valid_a1].astype(int)) if valid_a1.any() else 0.0
+    qwk = _masked_mean_qwk(preds_int, y_a2)
+    f1 = _masked_mean_f1(p_a1, y_a1)
+    val_loss = (loss_sum / max(n_batches, 1)) if n_batches else float("nan")
 
+    if return_loss:
+        return qwk, f1, val_loss
     return qwk, f1, {"z": z, "p_a1": p_a1, "y_a2": y_a2, "y_a1": y_a1}
+
+
+def _masked_mean_qwk(preds: np.ndarray, y: np.ndarray) -> float:
+    """Per-item QWK, masking NaN / -1 entries; mean over items with ≥ 2 unique labels."""
+    from ..utils.metrics import quadratic_weighted_kappa
+    if preds.size == 0:
+        return 0.0
+    scores = []
+    for j in range(preds.shape[1]):
+        col_pred = preds[:, j]
+        col_y = y[:, j]
+        m = np.isfinite(col_y) & (col_y >= 0)
+        if m.sum() < 2 or len(np.unique(col_y[m])) < 2:
+            continue
+        scores.append(quadratic_weighted_kappa(col_y[m].astype(int), col_pred[m].astype(int)))
+    return float(np.mean(scores)) if scores else 0.0
+
+
+def _masked_mean_f1(p: np.ndarray, y: np.ndarray, threshold: float = 0.5) -> float:
+    from sklearn.metrics import f1_score
+    if p.size == 0:
+        return 0.0
+    scores = []
+    for c in range(p.shape[1]):
+        m = np.isfinite(y[:, c]) & (y[:, c] >= 0)
+        if m.sum() < 2:
+            continue
+        pred = (p[m, c] >= threshold).astype(int)
+        scores.append(float(f1_score(y[m, c].astype(int), pred, zero_division=0.0)))
+    return float(np.mean(scores)) if scores else 0.0
 
 
 def predict_with_tta(

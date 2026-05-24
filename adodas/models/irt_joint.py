@@ -143,6 +143,12 @@ class IRTJointModel(nn.Module):
 # Losses.
 
 
+def _valid_mask(y: torch.Tensor) -> torch.Tensor:
+    """True where label is finite AND non-negative. Used for per-position masking
+    so partial-label participants still contribute on items they DID answer."""
+    return torch.isfinite(y) & (y >= 0)
+
+
 def build_ordinal_targets(labels: torch.Tensor, n_thresholds: int = 3) -> torch.Tensor:
     """labels: (B, n_items) in {0..K}; returns (B, n_items, K) binary."""
     thresh = torch.arange(1, n_thresholds + 1, device=labels.device).float()
@@ -150,10 +156,25 @@ def build_ordinal_targets(labels: torch.Tensor, n_thresholds: int = 3) -> torch.
 
 
 def coral_bce(z: torch.Tensor, y_a2: torch.Tensor, label_smoothing: float = 0.0) -> torch.Tensor:
-    targets = build_ordinal_targets(y_a2, n_thresholds=z.size(-1))
+    """CORAL BCE with per-position masking — NaN/-1 labels skip loss for that
+    (subject, item) pair instead of dropping the whole subject row."""
+    valid = _valid_mask(y_a2)                                # (B, 21)
+    y_safe = torch.where(valid, y_a2, torch.zeros_like(y_a2))
+    targets = build_ordinal_targets(y_safe, n_thresholds=z.size(-1))
     if label_smoothing > 0.0:
         targets = targets * (1.0 - label_smoothing) + 0.5 * label_smoothing
-    return F.binary_cross_entropy_with_logits(z, targets)
+    loss_pp = F.binary_cross_entropy_with_logits(z, targets, reduction="none")  # (B, 21, K)
+    mask3 = valid.unsqueeze(-1).expand_as(loss_pp).float()
+    return (loss_pp * mask3).sum() / mask3.sum().clamp_min(1.0)
+
+
+def a1_bce(logits: torch.Tensor, y_a1: torch.Tensor) -> torch.Tensor:
+    """A1 BCE with per-position masking."""
+    valid = _valid_mask(y_a1)                                # (B, 3)
+    y_safe = torch.where(valid, y_a1, torch.zeros_like(y_a1))
+    loss_pp = F.binary_cross_entropy_with_logits(logits, y_safe.float(), reduction="none")
+    mask = valid.float()
+    return (loss_pp * mask).sum() / mask.sum().clamp_min(1.0)
 
 
 def monotonic_class_probs(z: torch.Tensor) -> torch.Tensor:
@@ -171,15 +192,28 @@ def monotonic_class_probs(z: torch.Tensor) -> torch.Tensor:
 
 
 def soft_qwk_loss(class_probs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    """Differentiable soft QWK as 1 - kappa; bounded by ordinal cost matrix."""
-    b, _items, k = class_probs.shape
+    """Differentiable soft QWK as 1 - kappa; bounded by ordinal cost matrix.
+
+    Per-item masking: rows with NaN/-1 label for an item are removed from
+    that item's contingency table. If an item has no valid samples in the
+    batch it contributes 0 to the loss.
+    """
+    b, n_items, k = class_probs.shape
+    valid = _valid_mask(labels)                              # (B, n_items)
+    safe_labels = torch.where(valid, labels, torch.zeros_like(labels)).long().clamp(0, k - 1)
+    true_oh = F.one_hot(safe_labels, k).to(class_probs.dtype)  # (B, n_items, K)
+    # Zero out invalid rows so they don't contribute to histograms.
+    mask = valid.unsqueeze(-1).float()                       # (B, n_items, 1)
+    true_oh = true_oh * mask
+    probs_masked = class_probs * mask
+
     idx = torch.arange(k, device=class_probs.device, dtype=class_probs.dtype)
     w = (idx.unsqueeze(0) - idx.unsqueeze(1)).pow(2) / ((k - 1) ** 2)
 
-    true_oh = F.one_hot(labels.long().clamp(0, k - 1), k).to(class_probs.dtype)
-    o = torch.einsum("bit,bij->itj", true_oh, class_probs) / float(b)
-    hist_true = true_oh.mean(dim=0)
-    hist_pred = class_probs.mean(dim=0)
+    n_valid_per_item = mask.squeeze(-1).sum(dim=0).clamp_min(1.0)  # (n_items,)
+    o = torch.einsum("bit,bij->itj", true_oh, probs_masked) / n_valid_per_item.view(-1, 1, 1)
+    hist_true = true_oh.sum(dim=0) / n_valid_per_item.view(-1, 1)
+    hist_pred = probs_masked.sum(dim=0) / n_valid_per_item.view(-1, 1)
     e_mat = hist_true.unsqueeze(-1) * hist_pred.unsqueeze(-2)
     num = (w.unsqueeze(0) * o).sum(dim=(1, 2))
     den = (w.unsqueeze(0) * e_mat).sum(dim=(1, 2)).clamp_min(1e-7)
@@ -232,7 +266,7 @@ def total_loss(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Combined loss. Returns (loss_tensor, scalar_dict_for_logging)."""
     l_a2 = coral_bce(out["z"], y_a2, label_smoothing=cfg.label_smoothing)
-    l_a1 = F.binary_cross_entropy_with_logits(out["a1_logits"], y_a1.float())
+    l_a1 = a1_bce(out["a1_logits"], y_a1)
 
     probs = monotonic_class_probs(out["z"])
     l_qwk = soft_qwk_loss(probs, y_a2)
